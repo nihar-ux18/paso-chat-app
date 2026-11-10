@@ -17,6 +17,7 @@
   "dependencies": {
     "@getbrevo/brevo": "^4.0.1",
     "@google/generative-ai": "^0.24.1",
+    "@mastra/core": "^0.24.9",
     "@socket.io/redis-adapter": "^8.3.0",
     "axios": "^1.13.5",
     "bcryptjs": "^2.4.3",
@@ -36,7 +37,8 @@
     "nodemailer": "^8.0.1",
     "redis": "^5.12.1",
     "resend": "^6.9.2",
-    "socket.io": "^4.8.1"
+    "socket.io": "^4.8.1",
+    "zod": "^3.25.76"
   },
   "devDependencies": {
     "@emnapi/core": "^1.10.0",
