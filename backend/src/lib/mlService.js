@@ -39,9 +39,25 @@ export const analyzeMessageWithStatus = async (text) => {
     console.log("ML RESPONSE:", response.data);
 
     const data = response.data || {};
+
+    if (
+      typeof data.toxic_score !== "number" ||
+      Number.isNaN(data.toxic_score) ||
+      typeof data.spam_score !== "number" ||
+      Number.isNaN(data.spam_score)
+    ) {
+      return {
+        toxic_score: 0,
+        spam_score: 0,
+        smart_replies: [],
+        degraded: true,
+        error: "ML service returned an invalid response",
+      };
+    }
+
     return {
-      toxic_score: typeof data.toxic_score === "number" ? data.toxic_score : 0,
-      spam_score: typeof data.spam_score === "number" ? data.spam_score : 0,
+      toxic_score: data.toxic_score,
+      spam_score: data.spam_score,
       smart_replies: Array.isArray(data.smart_replies) ? data.smart_replies : [],
       degraded: false,
       error: null,

@@ -14,7 +14,7 @@ export const conversationHistoryTool = createTool({
     senderId: z.string().describe("User ID of the message sender or requester"),
     receiverId: z.string().optional().describe("User ID of the chat recipient (for direct chats)"),
     groupId: z.string().optional().describe("Group ID (for group chats)"),
-    limit: z.number().int().min(1).default(10).describe("Number of messages to retrieve (hard cap 20)"),
+    limit: z.number().int().min(1).max(50).default(10).describe("Number of messages to retrieve (hard cap 20)"),
   }),
   outputSchema: z.object({
     success: z.boolean(),

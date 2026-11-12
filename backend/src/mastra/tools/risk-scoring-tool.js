@@ -103,7 +103,7 @@ export const riskScoringTool = createTool({
 
       // Sum and clamp to 0-100
       const rawScore = toxicityPoints + spamPoints + userHistoryPoints + velocityPoints;
-      const riskScore = Math.min(100, Math.max(0, rawScore));
+      const riskScore = Math.min(100, Math.max(0, Number.isFinite(rawScore) ? rawScore : 0));
 
       // 5. Handling Degraded ML
       if (degraded) {

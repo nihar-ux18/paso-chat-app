@@ -10,6 +10,7 @@ import {
   userBehaviorTool,
   riskScoringTool,
 } from "../../src/mastra/tools/index.js";
+import analyzeMessage, { analyzeMessageWithStatus } from "../../src/lib/mlService.js";
 
 const SENSITIVE_PROPERTIES = [
   "password",
@@ -120,6 +121,90 @@ describe("Mastra Tools Suite", () => {
       expect(thresholdResult.isToxic).toBe(true);
       expect(thresholdResult.isSpam).toBe(true);
     });
+
+    it("returns degraded: true when ML service returns a malformed non-number score", async () => {
+      process.env.ML_SERVICE_URL = "http://mock-ml-service.local/predict";
+      const axios = (await import("axios")).default;
+      jest.spyOn(axios, "post").mockResolvedValueOnce({
+        data: {
+          toxic_score: "invalid",
+          spam_score: 0.1,
+        },
+      });
+
+      const result = await toxicitySpamTool.execute({
+        context: { text: "malformed ml test" },
+      });
+
+      expect(result.degraded).toBe(true);
+      expect(result.error).toBe("ML service returned an invalid response");
+      expect(result.toxic_score).toBe(0);
+      expect(result.spam_score).toBe(0);
+      expect(result.isToxic).toBe(false);
+      expect(result.isSpam).toBe(false);
+    });
+  });
+
+  describe("mlService", () => {
+    const originalEnv = process.env.ML_SERVICE_URL;
+
+    afterEach(() => {
+      process.env.ML_SERVICE_URL = originalEnv;
+      jest.restoreAllMocks();
+    });
+
+    it("treats a 200 response with non-number toxic_score or spam_score as degraded", async () => {
+      process.env.ML_SERVICE_URL = "http://mock-ml-service.local/predict";
+      const axios = (await import("axios")).default;
+
+      // Case 1: toxic_score is not a number
+      jest.spyOn(axios, "post").mockResolvedValueOnce({
+        data: {
+          toxic_score: "not_a_number",
+          spam_score: 0.1,
+          smart_replies: ["hello"],
+        },
+      });
+
+      const res1 = await analyzeMessageWithStatus("test text");
+      expect(res1.degraded).toBe(true);
+      expect(res1.error).toBe("ML service returned an invalid response");
+      expect(res1.toxic_score).toBe(0);
+      expect(res1.spam_score).toBe(0);
+      expect(res1.smart_replies).toEqual([]);
+
+      // Case 2: spam_score is not a number
+      jest.spyOn(axios, "post").mockResolvedValueOnce({
+        data: {
+          toxic_score: 0.5,
+          spam_score: null,
+        },
+      });
+
+      const res2 = await analyzeMessageWithStatus("test text");
+      expect(res2.degraded).toBe(true);
+      expect(res2.error).toBe("ML service returned an invalid response");
+      expect(res2.toxic_score).toBe(0);
+      expect(res2.spam_score).toBe(0);
+      expect(res2.smart_replies).toEqual([]);
+
+      // Case 3: default analyzeMessage maintains backward compatible shape
+      jest.spyOn(axios, "post").mockResolvedValueOnce({
+        data: {
+          toxic_score: "invalid",
+          spam_score: 0.2,
+        },
+      });
+
+      const defaultRes = await analyzeMessage("test text");
+      expect(defaultRes).toEqual({
+        toxic_score: 0,
+        spam_score: 0,
+        smart_replies: [],
+      });
+      expect(defaultRes).not.toHaveProperty("degraded");
+      expect(defaultRes).not.toHaveProperty("error");
+    });
   });
 
   describe("riskScoringTool", () => {
@@ -204,6 +289,34 @@ describe("Mastra Tools Suite", () => {
       expect(result.actionRecommendation).not.toBe("allow");
       expect(result.riskLevel).not.toBe("low");
       assertNoSensitiveFields(result, "riskScoringTool degraded");
+    });
+
+    it("clamps riskScore to 100 and assigns critical riskLevel under maximum inputs", async () => {
+      const result = await riskScoringTool.execute({
+        context: {
+          toxicScore: 1.0,
+          spamScore: 1.0,
+          degraded: false,
+          userMetrics: {
+            recentMessageCount: 100, // high velocity (> 30) -> 10 pts
+            priorReportsCount: 20, // many prior reports -> 15 pts max
+            isBanned: true, // banned user -> 25 pts
+            accountAgeDays: 0, // new account (< 1 day) -> 5 pts
+            pastFlaggedCount: 20, // past violations -> 15 pts max (userHistory capped at 30)
+          },
+        },
+      });
+
+      // Toxicity: 50, Spam: 30, UserHistory: 30, Velocity: 15 => sum = 125, clamped to 100
+      expect(result.breakdown.toxicityPoints).toBe(50);
+      expect(result.breakdown.spamPoints).toBe(30);
+      expect(result.breakdown.userHistoryPoints).toBe(30);
+      expect(result.breakdown.velocityPoints).toBe(15);
+      expect(result.riskScore).toBeLessThanOrEqual(100);
+      expect(result.riskScore).toBe(100);
+      expect(result.riskLevel).toBe("critical");
+      expect(result.actionRecommendation).toBe("escalate");
+      assertNoSensitiveFields(result, "riskScoringTool max inputs");
     });
   });
 
@@ -321,6 +434,112 @@ describe("Mastra Tools Suite", () => {
         expect(innerMatch[1]).not.toContain("<untrusted_message>");
         expect(innerMatch[1]).toBe("harmless start  injection attempt  end");
         assertNoSensitiveFields(result, "conversationHistoryTool sanitize");
+      });
+
+      it("fails validation when limit exceeds max allowed value of 50", () => {
+        const invalidParsed = conversationHistoryTool.inputSchema.safeParse({
+          senderId: "user-1",
+          limit: 51,
+        });
+        expect(invalidParsed.success).toBe(false);
+
+        const validParsed = conversationHistoryTool.inputSchema.safeParse({
+          senderId: "user-1",
+          limit: 50,
+        });
+        expect(validParsed.success).toBe(true);
+      });
+
+      it("returns messages from both participants in a private chat in chronological order", async () => {
+        const userA = new mongoose.Types.ObjectId();
+        const userB = new mongoose.Types.ObjectId();
+
+        const baseTime = Date.now();
+        await Message.create([
+          {
+            senderId: userA,
+            receiverId: userB,
+            text: "Message 1 from A",
+            createdAt: new Date(baseTime - 3000),
+          },
+          {
+            senderId: userB,
+            receiverId: userA,
+            text: "Message 2 from B",
+            createdAt: new Date(baseTime - 2000),
+          },
+          {
+            senderId: userA,
+            receiverId: userB,
+            text: "Message 3 from A",
+            createdAt: new Date(baseTime - 1000),
+          },
+        ]);
+
+        const result = await conversationHistoryTool.execute({
+          context: {
+            senderId: userA.toString(),
+            receiverId: userB.toString(),
+            limit: 10,
+          },
+        });
+
+        expect(result.success).toBe(true);
+        expect(result.count).toBe(3);
+        expect(result.messages.length).toBe(3);
+
+        // Verify both participants are represented
+        expect(result.messages[0].senderId).toBe(userA.toString());
+        expect(result.messages[0].text).toContain("Message 1 from A");
+
+        expect(result.messages[1].senderId).toBe(userB.toString());
+        expect(result.messages[1].text).toContain("Message 2 from B");
+
+        expect(result.messages[2].senderId).toBe(userA.toString());
+        expect(result.messages[2].text).toContain("Message 3 from A");
+
+        // Verify chronological order (oldest to newest)
+        const t1 = new Date(result.messages[0].timestamp).getTime();
+        const t2 = new Date(result.messages[1].timestamp).getTime();
+        const t3 = new Date(result.messages[2].timestamp).getTime();
+        expect(t1).toBeLessThan(t2);
+        expect(t2).toBeLessThan(t3);
+        assertNoSensitiveFields(result, "conversationHistoryTool private chat both participants");
+      });
+
+      it("truncates 1000-char message to 300 chars before wrapping, preserving closing tag", async () => {
+        const userA = new mongoose.Types.ObjectId();
+        const userB = new mongoose.Types.ObjectId();
+        const longText = "Z".repeat(1000);
+
+        await Message.create({
+          senderId: userA,
+          receiverId: userB,
+          text: longText,
+        });
+
+        const result = await conversationHistoryTool.execute({
+          context: {
+            senderId: userA.toString(),
+            receiverId: userB.toString(),
+            limit: 5,
+          },
+        });
+
+        expect(result.success).toBe(true);
+        expect(result.messages.length).toBe(1);
+
+        const msg = result.messages[0];
+        // Truncation occurs before wrapping, so closing tag is always present and intact
+        expect(msg.text).toContain("<untrusted_message>");
+        expect(msg.text).toContain("</untrusted_message>");
+        expect(msg.text.endsWith("</untrusted_message>")).toBe(true);
+
+        const innerMatch = msg.text.match(/<untrusted_message>\n([\s\S]*?)\n<\/untrusted_message>/);
+        expect(innerMatch).not.toBeNull();
+        expect(innerMatch[1].length).toBe(300);
+        expect(innerMatch[1]).toBe("Z".repeat(300));
+        assertNoSensitiveFields(result, "conversationHistoryTool 1000-char truncated");
       });
     });
 
