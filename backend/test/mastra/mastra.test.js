@@ -29,6 +29,12 @@ describe("lib/mastra.js - enrichMessage", () => {
     jest.unstable_mockModule("../../src/mastra/agents/index.js", () => ({
       getModerationAgent: mockGetModerationAgent,
       ModerationEnrichmentSchema,
+      getRiskAgent: jest.fn(),
+      RiskAssessmentSchema: {},
+      assessUserRisk: jest.fn(),
+      getAnalyticsAgent: jest.fn(),
+      AnalyticsSummarySchema: {},
+      generateAnalyticsSummary: jest.fn(),
     }));
 
     const mod = await import("../../src/lib/mastra.js");

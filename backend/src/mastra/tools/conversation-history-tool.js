@@ -1,6 +1,7 @@
 import { createTool } from "@mastra/core/tools";
 import { z } from "zod";
 import Message from "../../models/message.model.js";
+import { sanitizeUntrustedText } from "../utils/sanitize.js";
 
 /**
  * Tool for retrieving recent conversation history.
@@ -78,7 +79,7 @@ export const conversationHistoryTool = createTool({
       // Reverse so messages are chronological (oldest to newest within the window)
       const formatted = rawMessages.reverse().map((msg) => {
         const rawText = typeof msg.text === "string" ? msg.text.slice(0, 300) : "";
-        const sanitized = rawText.replace(/<\/?untrusted_message>/gi, "");
+        const sanitized = sanitizeUntrustedText(rawText);
         const wrappedText = `<untrusted_message>\n${sanitized}\n</untrusted_message>`;
 
         return {
